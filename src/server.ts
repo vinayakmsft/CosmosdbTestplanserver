@@ -6,6 +6,7 @@ import { AzureDevOpsTestPlansClient } from './AzureDevOpsTestPlansClient';
 import { CosmosService, Connection, TestSuite, TestCase, TestPlan } from './cosmosService';
 import { GitHubService, GitHubIssueData } from './githubService';
 import * as dotenv from 'dotenv';
+import { GetCreateIssueContent } from './CreateIssuePrompt';
 
 // Load environment variables
 dotenv.config();
@@ -1020,100 +1021,82 @@ app.post('/:resourceId/createIssue', ensureCosmosInitialized, async (req: Reques
                 continue;
             }
 
-            // Process each test case name in the group
-            for (const testCaseName of testCaseNames) {
-                totalProcessed++;
-                
-                let githubIssue = null;
-                let issueCreationStatus = 'Generating test case';
-                let errorDetails = null;
+            try{
+                // Process each test case name in the group
+                for (const testCaseName of testCaseNames) {
+                    totalProcessed++;
 
-                console.log(`🔄 Processing test case: "${testCaseName}" for testCaseId: ${groupTestCaseId}`);
+                    suites = await Promise.all(suites.map(async(suite: TestSuite) => {
+                        if (suite.testCaseId === groupTestCaseId) {
+                            suite.testCases = await Promise.all(suite.testCases.map(async(testCase: TestCase) => {
+                                if (testCase.name === testCaseName) {
+                                    
+                                    console.log(`🔄 Processing test case: "${testCaseName}" for testCaseId: ${groupTestCaseId}`);
+                                    
+                                    let githubIssue = null;
+                                    let issueCreationStatus = 'Generating test case';
+                                    let errorDetails = null;
 
-                try {
-                    // Prepare issue data with automatic API labels
-                    const apiLabels = ['ado-test-api', 'automated-issue', 'test-case'];
-                    const allLabels = [...new Set([...(labels || []), ...apiLabels])]; // Merge and deduplicate labels
+                                    try {
+                                        // Prepare issue data with automatic API labels
+                                        const apiLabels = ['ado-test-api', 'automated-issue', 'test-case'];
+                                        const allLabels = [...new Set([...(labels || []), ...apiLabels])]; // Merge and deduplicate labels
+                                        
+                                        const issueData: GitHubIssueData = {
+                                            title: `Generate Enhance Test Case For ${testCaseName}`,
+                                            body: GetCreateIssueContent(JSON.stringify(testCase, null, 2)),
+                                            labels: allLabels,
+                                            assignees: validatedAssignees
+                                        };
+
+                                        // Create the GitHub issue
+                                        githubIssue = await githubService.createIssue(connection.github_url, issueData);
+                                        issueCreationStatus = 'Generating test case';
+                                        totalSuccessful++;
+                                        
+                                        console.log(`🎉 GitHub issue created successfully: ${githubIssue.html_url}`);
+
+                                    } catch (githubError: any) {
+                                        console.error(`GitHub issue creation failed for "${testCaseName}":`, githubError);
+                                        errorDetails = githubError.message;
+                                        issueCreationStatus = 'Failed to generate test case';
+                                    }
+
+                                    // Update the specific test case in the suites
+                                    let testCaseUpdated = false;
+                                    const issueId = githubIssue ? githubIssue.number.toString() : Math.random().toString(36).substr(2, 8);
+
+
+                                    testCaseUpdated = true;
+                                    return {
+                                        ...testCase,
+                                        issueId,
+                                        status: issueCreationStatus,
+                                        ...(githubIssue && {
+                                            githubUrl: githubIssue.html_url,
+                                            githubIssueNumber: githubIssue.number,
+                                            githubIssueId: githubIssue.id
+                                        }),
+                                        ...(errorDetails && { errorDetails })
+                                    };
+                                }
+                                return testCase;
+                            }));
+                        }
+                        return suite;
+                    }));
+
                     
-                    const issueData: GitHubIssueData = {
-                        title: `Test Case: ${testCaseName}`,
-                        body: `## Test Case Details
-
-**Test Case Name:** ${testCaseName}
-**Test Case ID:** ${groupTestCaseId}
-**Status:** Generating test case
-
-### Test Information
-This GitHub issue was automatically created for the test case "${testCaseName}" from Azure DevOps Test Plans.
-
-### Next Steps
-- [ ] Review test case requirements
-- [ ] Generate detailed test steps
-- [ ] Execute test case
-- [ ] Document results
-
----
-**Resource Information:**
-- **Test Case ID:** ${groupTestCaseId}
-- **Resource ID:** ${resourceId}
-- **ADO URL:** ${connection.ado_url}
-- **Website:** ${connection.website_url}
-- **Environment:** ${connection.prd}
-- **Created:** ${new Date().toISOString()}
-
-*This issue was automatically created from Azure DevOps Test Plans API*`,
-                        labels: allLabels,
-                        assignees: validatedAssignees
-                    };
-
-                    // Create the GitHub issue
-                    githubIssue = await githubService.createIssue(connection.github_url, issueData);
-                    issueCreationStatus = 'Generating test case';
-                    totalSuccessful++;
-                    
-                    console.log(`🎉 GitHub issue created successfully: ${githubIssue.html_url}`);
-
-                } catch (githubError: any) {
-                    console.error(`GitHub issue creation failed for "${testCaseName}":`, githubError);
-                    errorDetails = githubError.message;
-                    issueCreationStatus = 'Failed to generate test case';
                 }
-
-                // Update the specific test case in the suites
-                let testCaseUpdated = false;
-                const issueId = githubIssue ? githubIssue.number.toString() : Math.random().toString(36).substr(2, 8);
-
-                suites = suites.map((suite: TestSuite) => {
-                    if (suite.testCaseId === groupTestCaseId) {
-                        suite.testCases = suite.testCases.map((testCase: TestCase) => {
-                            if (testCase.name === testCaseName) {
-                                testCaseUpdated = true;
-                                return {
-                                    ...testCase,
-                                    issueId,
-                                    status: issueCreationStatus,
-                                    ...(githubIssue && {
-                                        githubUrl: githubIssue.html_url,
-                                        githubIssueNumber: githubIssue.number,
-                                        githubIssueId: githubIssue.id
-                                    }),
-                                    ...(errorDetails && { errorDetails })
-                                };
-                            }
-                            return testCase;
-                        });
-                    }
-                    return suite;
+            }catch (error: any) {
+                console.error(`Error processing test case group "${groupTestCaseId}":`, error);
+                return res.status(500).json({
+                    error: 'Failed to process test case group',
+                    details: error.message,
+                    success: false
                 });
-
-                // If test case wasn't found in existing suites, create a new suite entry
-                if (!testCaseUpdated) {
-                    // return 404 error
-                    console.warn(`Test case "${testCaseName}" not found in existing suites, creating new entry`);
-                    continue;
-
-                }
             }
+            
         }
 
         // Update the stored suites in Cosmos DB
