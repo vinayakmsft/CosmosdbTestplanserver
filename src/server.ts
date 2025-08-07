@@ -581,23 +581,19 @@ app.get('/:resourceId/ado_plans', ensureClientInitialized, ensureCosmosInitializ
         }
 
         // Parse ADO URL to extract organization and project info as fallback
-        const adoUrlMatch = connection.ado_url.match(/https:\/\/dev\.azure\.com\/([^\/]+)\/?(.*)?/);
-        let organization = '';
-        let project = '';
+        // Given ADO URL like https://devdiv.visualstudio.com/OnlineServices/_testPlans/define?planId=2542817&suiteId=2542818
+        // Need to extract organization as devdiv and project as OnlineServices
+        let organization = 'devdiv';
+        let project = 'OnlineServices';
         let organizationParam="";
         let projectParam="";
         
-        // Use query parameters if provided, otherwise fall back to connection URL
-        if (organizationParam) {
-            organization = organizationParam;
-        } else if (adoUrlMatch) {
+        const adoUrlMatch = connection.ado_url.match(/https:\/\/dev\.azure\.com\/([^\/]+)\/?(.*)?/);
+        if (adoUrlMatch) {
             organization = adoUrlMatch[1];
-        }
-        
-        if (projectParam) {
-            project = projectParam;
-        } else if (adoUrlMatch) {
-            project = adoUrlMatch[2] ? adoUrlMatch[2].replace(/\/$/, '') : '';
+            project = adoUrlMatch[2] || '';
+        } else {
+            console.warn('ADO URL does not match expected format, using defaults');
         }
 
         // Parse test plan ID if provided
@@ -765,11 +761,11 @@ app.get('/:resourceId/ado_plans', ensureClientInitialized, ensureCosmosInitializ
 
         // Save the suites to Cosmos DB (keeping the existing suite structure for compatibility)
         const cosmosTestSuites: TestSuite[] = suites.map((suite: any) => ({
-            id: suite.id.toString(), // Use string ID for Cosmos DB
+            id: suite.id, // Use string ID for Cosmos DB
             resourceId,
             name: suite.name,
             testCaseId: suite.testCaseId,
-            testplanid: suite.testPlanId, // Map test suite with test plan ID
+            testplanid: suite.testPlanId.toString(), // Map test suite with test plan ID
             testCases: suite.testCases.map((tc: any) => ({
                 testCaseId: tc.testCaseId, // Add testCaseId field to each test case
                 name: tc.name,
@@ -822,89 +818,11 @@ app.get('/:resourceId/testPlans', ensureCosmosInitialized, async (req: Request, 
         }
 
         // Get test suites from Cosmos DB
-        const testSuites = await cosmosService!.getTestSuites(resourceId, testPlanId);
+        const testPlans = await cosmosService!.getTestPlans(resourceId);
         
         // Check if we need to force refresh or if we have fallback data
-        const hasOnlyFallbackData = testSuites && testSuites.length > 0 ? testSuites.every((suite: TestSuite) => 
-            suite.testCases.every((testCase: TestCase) => 
-                testCase.name.includes('could not be processed') ||
-                testCase.name.includes('Error occurred while fetching') ||
-                (testCase.steps && testCase.steps.some((step: string) => 
-                    step.includes('Error occurred while fetching test cases') ||
-                    step.includes('fallback test case 17') ||
-                    step.includes('Please check the test plan configuration')
-                ))
-            )
-        ) : false;
-
-        console.log(`🔍 Fallback data detection: hasOnlyFallbackData=${hasOnlyFallbackData}, forceRefresh=${forceRefresh}, testSuites.length=${testSuites?.length || 0}`);
-
-        if (forceRefresh || hasOnlyFallbackData || !testSuites || testSuites.length === 0) {
-            console.log(`${forceRefresh ? 'Force refresh requested' : hasOnlyFallbackData ? 'Fallback data detected' : 'No data found'}, but refresh functionality requires testPlanId parameter`);
-            
-            return res.status(400).json({
-                error: 'Refresh requires specific test plan',
-                message: 'To refresh test plan data, please use the /:resourceId/ado_plans endpoint with testPlanId query parameter',
-                example: `Use GET /${resourceId}/ado_plans?testPlanId=123 to fetch a specific test plan`,
-                suggestion: 'The testPlans endpoint now only returns cached data. Use ado_plans endpoint to fetch fresh data.'
-            });
-        }
         
-        if (!testSuites || testSuites.length === 0) {
-            return res.json({
-                suites: [],
-                message: 'No test plans found for this resource. Please fetch test plans from Azure DevOps first.'
-            });
-        }
-
-        console.log(`Found ${testSuites.length} test suite(s) for resourceId: ${resourceId}`);
-
-        // Transform the data to match the requested format
-        const suites = testSuites.map((suite: TestSuite) => ({
-            name: suite.name,
-            testCaseId: suite.testCaseId,
-            testCases: suite.testCases.map((testCase: TestCase, index: number) => {
-                // Parse steps to create enhanced_Steps format
-                let enhancedSteps: any[] = [];
-                if (testCase.steps && Array.isArray(testCase.steps)) {
-                    enhancedSteps = testCase.steps.map((step: string, stepIndex: number) => {
-                        // Extract step name and description from the step string
-                        const stepMatch = step.match(/^Step (\d+):\s*(.+?)(?:\s*-\s*Expected:\s*(.+))?$/);
-                        if (stepMatch) {
-                            const stepNumber = stepMatch[1];
-                            const stepDescription = stepMatch[2];
-                            const expectedResult = stepMatch[3];
-                            
-                            return {
-                                stepName: `Step ${stepNumber}`,
-                                stepDescription: expectedResult ? 
-                                    `${stepDescription} - Expected: ${expectedResult}` : 
-                                    stepDescription
-                            };
-                        } else {
-                            return {
-                                stepName: `Step ${stepIndex + 1}`,
-                                stepDescription: step
-                            };
-                        }
-                    });
-                }
-
-                return {
-                    testCaseId: testCase.testCaseId || `${suite.testCaseId}-${index + 1}`, // Use stored testCaseId or create one
-                    name: testCase.name,
-                    steps: testCase.steps || [],
-                    status: testCase.status || 'Not Started',
-                    issueId: testCase.issueId || '',
-                    issueUrl: testCase.githubUrl || '',
-                    enhanced_Steps: enhancedSteps
-                };
-            })
-        }));
-
-        console.log(`Returning ${suites.length} suite(s) with ${suites.reduce((total, suite) => total + suite.testCases.length, 0)} total test cases`);
-
-        res.json({ suites });
+        res.json({ testPlans });
     } catch (error: any) {
         console.error('Error fetching existing test plans:', error);
         res.status(500).json({

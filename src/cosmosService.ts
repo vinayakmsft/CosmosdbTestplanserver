@@ -186,15 +186,15 @@ export class CosmosService {
                 throw new Error('CosmosService not initialized. Call initialize() first.');
             }
 
+            // first delete existing suites for the resourceId
+            await this.deleteTestSuites(resourceId);
+            
             const savedSuites: TestSuite[] = [];
 
             for (const suite of suites) {
                 // Use test plan ID as the document ID for test suites
-                const documentId = suite.id.toString();
-                
                 const suiteToSave = {
                     ...suite,
-                    id: documentId,
                     resourceId
                 };
 
