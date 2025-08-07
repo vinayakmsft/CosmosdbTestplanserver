@@ -116,7 +116,6 @@ For local development, you can use the Cosmos DB Emulator:
 
 ```bash
 COSMOS_DB_ENDPOINT=https://localhost:8081
-COSMOS_DB_KEY=
 COSMOS_DB_DATABASE=TestPlansDB
 ```
 

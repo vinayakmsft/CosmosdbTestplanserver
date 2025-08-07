@@ -17,8 +17,20 @@ export interface Connection {
 export interface TestCase {
     name: string;
     steps: string[];
+    detailedSteps?: Array<{action: string, expectedResult: string}>;
+    priority?: number;
+    state?: string;
+    assignedTo?: string;
+    areaPath?: string;
+    iterationPath?: string;
+    description?: string;
+    tags?: string;
     issueId?: string;
     status?: string;
+    githubUrl?: string;
+    githubIssueNumber?: number;
+    githubIssueId?: number;
+    errorDetails?: string;
 }
 
 export interface TestSuite {
@@ -107,10 +119,13 @@ export class CosmosService {
                 throw new Error('CosmosService not initialized. Call initialize() first.');
             }
 
-            // Set the id to be the same as resourceId for easy retrieval
+            // Create a safe document ID by encoding the resourceId
+            // Replace illegal characters with underscores and add prefix
+            const safeId = `conn_${Buffer.from(connection.resourceId).toString('base64').replace(/[^a-zA-Z0-9]/g, '_')}`;
+            
             const connectionToSave = {
                 ...connection,
-                id: connection.resourceId
+                id: safeId
             };
 
             const { resource } = await this.connectionsContainer.items.upsert(connectionToSave);
@@ -127,12 +142,21 @@ export class CosmosService {
                 throw new Error('CosmosService not initialized. Call initialize() first.');
             }
 
-            const { resource } = await this.connectionsContainer.item(resourceId, resourceId).read<Connection>();
-            return resource || null;
+            // Query by resourceId since we can't use it as document ID due to illegal characters
+            const querySpec = {
+                query: 'SELECT * FROM c WHERE c.resourceId = @resourceId',
+                parameters: [
+                    {
+                        name: '@resourceId',
+                        value: resourceId
+                    }
+                ]
+            };
+
+            const { resources } = await this.connectionsContainer.items.query<Connection>(querySpec).fetchAll();
+            
+            return resources.length > 0 ? resources[0] : null;
         } catch (error: any) {
-            if (error.code === 404) {
-                return null; // Connection not found
-            }
             console.error('Error getting connection from Cosmos DB:', error);
             throw error;
         }
@@ -163,9 +187,12 @@ export class CosmosService {
             const savedSuites: TestSuite[] = [];
 
             for (const suite of suites) {
+                // Create a safe document ID by encoding the resourceId and testCaseId
+                const safeId = `suite_${Buffer.from(`${resourceId}_${suite.testCaseId}`).toString('base64').replace(/[^a-zA-Z0-9]/g, '_')}`;
+                
                 const suiteToSave = {
                     ...suite,
-                    id: `${resourceId}_${suite.testCaseId}`,
+                    id: safeId,
                     resourceId
                 };
 
@@ -275,8 +302,11 @@ export class CosmosService {
             const savedPlans: TestPlan[] = [];
 
             for (const plan of testPlans) {
+                // Create a safe document ID by encoding the resourceId and planId
+                const safeId = `plan_${Buffer.from(`${resourceId}_${plan.id}`).toString('base64').replace(/[^a-zA-Z0-9]/g, '_')}`;
+                
                 const planToSave: TestPlan = {
-                    id: `${resourceId}_${plan.id}`,
+                    id: safeId,
                     resourceId,
                     planId: plan.id,
                     name: plan.name,
