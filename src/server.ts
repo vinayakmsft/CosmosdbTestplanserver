@@ -7,6 +7,7 @@ import { CosmosService, Connection, TestSuite, TestCase, TestPlan } from './cosm
 import { GitHubService, GitHubIssueData } from './githubService';
 import * as dotenv from 'dotenv';
 import { GetCreateIssueContent } from './CreateIssuePrompt';
+import test from 'node:test';
 
 // Load environment variables
 dotenv.config();
@@ -158,9 +159,18 @@ app.get('/api/testplans', ensureClientInitialized, async (req: Request, res: Res
     try {
         const filterActivePlans = req.query.filterActivePlans !== 'false'; // default true
         const includePlanDetails = req.query.includePlanDetails === 'true'; // default false
-        
-        const testPlans = await adoClient!.getAllTestPlans(filterActivePlans, includePlanDetails);
-        
+
+        const testPlans : any[] = await adoClient!.getAllTestPlans(filterActivePlans, includePlanDetails);
+
+        // for each test plan, get the test suites from db based on plan ID
+
+        if(testPlans && testPlans.length > 0) {
+            // Map test suites to their respective test plans
+            await Promise.all(testPlans.map(async plan => {
+                plan.suites = await cosmosService!.getTestSuitesByPlanId(plan.id);
+            }));
+        }
+
         res.json({
             success: true,
             data: testPlans,
@@ -818,11 +828,20 @@ app.get('/:resourceId/testPlans', ensureCosmosInitialized, async (req: Request, 
         }
 
         // Get test suites from Cosmos DB
-        const testPlans = await cosmosService!.getTestPlans(resourceId);
-        
+        const testPlans : any[] = await cosmosService!.getTestPlans(resourceId);
+
+
+        // for each test plan, get the test suites from db based on plan ID
+
+        if(testPlans && testPlans.length > 0) {
+            // Map test suites to their respective test plans
+            await Promise.all(testPlans.map(async plan => {
+                plan.suites = await cosmosService!.getTestSuites(resourceId, plan.planId.toString());
+            }));
+        }
         // Check if we need to force refresh or if we have fallback data
-        
-        res.json({ testPlans });
+
+        res.json(testPlans || []);
     } catch (error: any) {
         console.error('Error fetching existing test plans:', error);
         res.status(500).json({

@@ -59,6 +59,7 @@ export interface TestPlan {
 }
 
 export class CosmosService {
+    
     private client: CosmosClient;
     private database: Database;
     private connectionsContainer: Container;
@@ -355,6 +356,30 @@ export class CosmosService {
             return resources;
         } catch (error) {
             console.error('Error getting test plans from Cosmos DB:', error);
+            throw error;
+        }
+    }
+
+    async getTestSuitesByPlanId(testPlanId: number): Promise<TestSuite[]> {
+        try {
+            if (!this.isInitialized) {
+                throw new Error('CosmosService not initialized. Call initialize() first.');
+            }
+
+            const querySpec = {
+                query: 'SELECT * FROM c WHERE c.testPlanid = @testPlanId',
+                parameters: [
+                    {
+                        name: '@testPlanId',
+                        value: testPlanId
+                    }
+                ]
+            };
+
+            const { resources } = await this.testSuitesContainer.items.query<TestSuite>(querySpec).fetchAll();
+            return resources;
+        } catch (error) {
+            console.error('Error getting test suites from Cosmos DB:', error);
             throw error;
         }
     }
