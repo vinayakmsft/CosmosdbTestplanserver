@@ -602,6 +602,11 @@ app.get('/:resourceId/ado_plans', ensureClientInitialized, ensureCosmosInitializ
         // Parse test plan ID if provided
         let testPlanId: number | undefined;
         let testPlanIdParam="";
+
+        // get test plan id from query parameters
+        testPlanIdParam = req.query.testPlanId as string || '';
+
+
         if (testPlanIdParam) {
             const parsedTestPlanId = parseInt(testPlanIdParam);
             if (!isNaN(parsedTestPlanId)) {
