@@ -138,7 +138,7 @@ app.get('/', (req: Request, res: Response) => {
             'POST /:resourceId/saveConnection': 'Save connection configuration',
             'GET /:resourceId': 'Get connection configuration',
             'GET /:resourceId/ado_plans': 'Get ADO test plans and suites',
-            'POST /:resourceId/createIssue/:testCaseId': 'Create GitHub issue for test case (adds automated labels)',
+            'POST /:resourceId/createIssue/:testCaseId': 'Create multiple GitHub issues for test cases (adds automated labels)',
             'GET /:resourceId/github/test': 'Test GitHub connection and repository access'
         },
         documentation: 'See README.md for detailed API documentation'
@@ -679,19 +679,7 @@ app.get('/:resourceId/ado_plans', ensureClientInitialized, ensureCosmosInitializ
             } catch (error) {
                 console.warn(`⚠️ Could not process test plan ${plan.name} (ID: ${plan.id}):`, error);
                 
-                // Fallback: create a suite with error information
-                suites.push({
-                    name: plan.name || `Test Plan ${plan.id}`,
-                    testCaseId: plan.id?.toString() || '17',
-                    testCases: [{
-                        name: `Test plan "${plan.name}" could not be processed`,
-                        steps: [
-                            "Error occurred while fetching test cases from Azure DevOps - using fallback test case 17",
-                            "Please check the test plan configuration and permissions",
-                            "Manual verification may be required"
-                        ]
-                    }]
-                });
+                
             }
         }
 
@@ -710,7 +698,7 @@ app.get('/:resourceId/ado_plans', ensureClientInitialized, ensureCosmosInitializ
         }));
         await cosmosService!.saveTestSuites(resourceId, cosmosTestSuites);
 
-        res.json({ suites });
+        res.json({ suites, name : "playwright.microsoft.com Test Plan" });
     } catch (error: any) {
         console.error('Error fetching ADO plans:', error);
         res.status(500).json({
@@ -721,18 +709,27 @@ app.get('/:resourceId/ado_plans', ensureClientInitialized, ensureCosmosInitializ
 });
 
 /**
- * POST /:resourceId/createIssue/:testCaseId
- * Create GitHub issue for test case (automatically adds API tracking labels)
- * Body: { title, body, labels, assignees }
+ * POST /:resourceId/createIssue
+ * Create GitHub issues for multiple test cases (automatically adds API tracking labels)
+ * Body: { 
+ *   testCases: [
+ *     {
+ *       testCaseId: string,
+ *       testCases: string[]
+ *     }
+ *   ],
+ *   labels?: string[],
+ *   assignees?: string[]
+ * }
  */
-app.post('/:resourceId/createIssue/:testCaseId', ensureCosmosInitialized, async (req: Request, res: Response) => {
+app.post('/:resourceId/createIssue', ensureCosmosInitialized, async (req: Request, res: Response) => {
     try {
-        let { resourceId, testCaseId } = req.params;
+        let { resourceId } = req.params;
         
         // Decode the URL-encoded resourceId
         resourceId = decodeURIComponent(resourceId);
         
-        const { title, body, labels, assignees } = req.body;
+        const { testCases, labels, assignees } = req.body;
 
         // Check if connection exists
         const connection = await cosmosService!.getConnection(resourceId);
@@ -744,10 +741,10 @@ app.post('/:resourceId/createIssue/:testCaseId', ensureCosmosInitialized, async 
         }
 
         // Validate required fields
-        if (!title || !body) {
+        if (!testCases || !Array.isArray(testCases) || testCases.length === 0) {
             return res.status(400).json({
                 error: 'Missing required fields',
-                message: 'title and body are required'
+                message: 'testCases array is required and cannot be empty'
             });
         }
 
@@ -759,43 +756,99 @@ app.post('/:resourceId/createIssue/:testCaseId', ensureCosmosInitialized, async 
             });
         }
 
-        let githubIssue = null;
-        let issueCreationStatus = 'Failed';
-        let errorDetails = null;
-
+        // Initialize GitHub service
+        const githubService = new GitHubService();
+        
+        // Test GitHub connection first
+        let connectionTest;
         try {
-            // Initialize GitHub service
-            const githubService = new GitHubService();
-            
-            // Test GitHub connection first
-            const connectionTest = await githubService.testConnection();
+            connectionTest = await githubService.testConnection();
             if (!connectionTest.authenticated) {
                 throw new Error('GitHub authentication failed. Please check GITHUB_TOKEN environment variable.');
             }
-
             console.log(`✅ GitHub authenticated as: ${connectionTest.user}`);
-            
-            // Validate assignees if provided (don't add automatic bot assignment)
-            let validatedAssignees: string[] = [];
-            if (assignees && assignees.length > 0) {
+        } catch (authError: any) {
+            return res.status(401).json({
+                error: 'GitHub authentication failed',
+                message: authError.message,
+                success: false
+            });
+        }
+
+        // Validate assignees if provided
+        let validatedAssignees: string[] = [];
+        if (assignees && assignees.length > 0) {
+            try {
                 validatedAssignees = await githubService.validateAssignees(connection.github_url, assignees);
                 if (validatedAssignees.length !== assignees.length) {
                     console.warn('Some assignees were filtered out due to repository access permissions');
                 }
                 console.log(`📋 Final assignees list: ${validatedAssignees.join(', ')}`);
-            } else {
-                console.log('📋 No assignees specified for this issue');
-            }            // Prepare issue data with automatic API labels
-            const apiLabels = ['ado-test-api', 'automated-issue'];
-            const allLabels = [...new Set([...(labels || []), ...apiLabels])]; // Merge and deduplicate labels
+            } catch (assigneeError) {
+                console.warn('Error validating assignees:', assigneeError);
+                validatedAssignees = [];
+            }
+        } else {
+            console.log('📋 No assignees specified for these issues');
+        }
+
+        // Get existing suites for this resource
+        let suites = await cosmosService!.getTestSuites(resourceId);
+        
+        if (!suites) {
+            return res.status(404).json({
+                error: 'Test suite not found',
+                message: "",
+                success: false
+            });
+        }
+
+        let totalProcessed = 0;
+        let totalSuccessful = 0;
+
+        for (const testCaseGroup of testCases) {
+            const { testCaseId: groupTestCaseId, testCases: testCaseNames } = testCaseGroup;
             
-            const issueData: GitHubIssueData = {
-                title,
-                body: `${body}
+            if (!groupTestCaseId || !testCaseNames || !Array.isArray(testCaseNames)) {
+                console.warn(`Skipping invalid test case group:`, testCaseGroup);
+                continue;
+            }
+
+            // Process each test case name in the group
+            for (const testCaseName of testCaseNames) {
+                totalProcessed++;
+                
+                let githubIssue = null;
+                let issueCreationStatus = 'Generating test case';
+                let errorDetails = null;
+
+                console.log(`🔄 Processing test case: "${testCaseName}" for testCaseId: ${groupTestCaseId}`);
+
+                try {
+                    // Prepare issue data with automatic API labels
+                    const apiLabels = ['ado-test-api', 'automated-issue', 'test-case'];
+                    const allLabels = [...new Set([...(labels || []), ...apiLabels])]; // Merge and deduplicate labels
+                    
+                    const issueData: GitHubIssueData = {
+                        title: `Test Case: ${testCaseName}`,
+                        body: `## Test Case Details
+
+**Test Case Name:** ${testCaseName}
+**Test Case ID:** ${groupTestCaseId}
+**Status:** Generating test case
+
+### Test Information
+This GitHub issue was automatically created for the test case "${testCaseName}" from Azure DevOps Test Plans.
+
+### Next Steps
+- [ ] Review test case requirements
+- [ ] Generate detailed test steps
+- [ ] Execute test case
+- [ ] Document results
 
 ---
-**Test Case Information:**
-- **Test Case ID:** ${testCaseId}
+**Resource Information:**
+- **Test Case ID:** ${groupTestCaseId}
 - **Resource ID:** ${resourceId}
 - **ADO URL:** ${connection.ado_url}
 - **Website:** ${connection.website_url}
@@ -803,71 +856,58 @@ app.post('/:resourceId/createIssue/:testCaseId', ensureCosmosInitialized, async 
 - **Created:** ${new Date().toISOString()}
 
 *This issue was automatically created from Azure DevOps Test Plans API*`,
-                labels: allLabels,
-                assignees: validatedAssignees
-            };
+                        labels: allLabels,
+                        assignees: validatedAssignees
+                    };
 
-            // Create the GitHub issue
-            githubIssue = await githubService.createIssue(connection.github_url, issueData);
-            issueCreationStatus = 'Created';
-            
-            console.log(`🎉 GitHub issue created successfully: ${githubIssue.html_url}`);
+                    // Create the GitHub issue
+                    githubIssue = await githubService.createIssue(connection.github_url, issueData);
+                    issueCreationStatus = 'Generating test case';
+                    totalSuccessful++;
+                    
+                    console.log(`🎉 GitHub issue created successfully: ${githubIssue.html_url}`);
 
-        } catch (githubError: any) {
-            console.error('GitHub issue creation failed:', githubError);
-            errorDetails = githubError.message;
-            issueCreationStatus = 'Failed';
-            
-            // Don't return error here, we'll still update the test suite with failure info
-        }
+                } catch (githubError: any) {
+                    console.error(`GitHub issue creation failed for "${testCaseName}":`, githubError);
+                    errorDetails = githubError.message;
+                    issueCreationStatus = 'Failed to generate test case';
+                }
 
-        // Get existing suites for this resource
-        let suites = await cosmosService!.getTestSuites(resourceId);
-        
-        // Find the test case and update it with issue information
-        let issueUpdated = false;
-        const issueId = githubIssue ? githubIssue.number.toString() : Math.random().toString(36).substr(2, 8);
-        
-        suites = suites.map((suite: TestSuite) => {
-            if (suite.testCaseId === testCaseId) {
-                suite.testCases = suite.testCases.map((testCase: TestCase) => ({
-                    ...testCase,
-                    issueId,
-                    status: issueCreationStatus,
-                    ...(githubIssue && {
-                        githubUrl: githubIssue.html_url,
-                        githubIssueNumber: githubIssue.number,
-                        githubIssueId: githubIssue.id
-                    }),
-                    ...(errorDetails && { errorDetails })
-                }));
-                issueUpdated = true;
-            }
-            return suite;
-        });
+                // Update the specific test case in the suites
+                let testCaseUpdated = false;
+                const issueId = githubIssue ? githubIssue.number.toString() : Math.random().toString(36).substr(2, 8);
 
-        if (!issueUpdated) {
-            // If test case not found, create a new suite entry
-            const newSuite: TestSuite = {
-                resourceId,
-                name: "GitHub Issue Suite",
-                testCaseId,
-                testCases: [
-                    {
-                        name: title,
-                        steps: [body],
-                        issueId,
-                        status: issueCreationStatus,
-                        ...(githubIssue && {
-                            githubUrl: githubIssue.html_url,
-                            githubIssueNumber: githubIssue.number,
-                            githubIssueId: githubIssue.id
-                        }),
-                        ...(errorDetails && { errorDetails })
+                suites = suites.map((suite: TestSuite) => {
+                    if (suite.testCaseId === groupTestCaseId) {
+                        suite.testCases = suite.testCases.map((testCase: TestCase) => {
+                            if (testCase.name === testCaseName) {
+                                testCaseUpdated = true;
+                                return {
+                                    ...testCase,
+                                    issueId,
+                                    status: issueCreationStatus,
+                                    ...(githubIssue && {
+                                        githubUrl: githubIssue.html_url,
+                                        githubIssueNumber: githubIssue.number,
+                                        githubIssueId: githubIssue.id
+                                    }),
+                                    ...(errorDetails && { errorDetails })
+                                };
+                            }
+                            return testCase;
+                        });
                     }
-                ]
-            };
-            suites.push(newSuite);
+                    return suite;
+                });
+
+                // If test case wasn't found in existing suites, create a new suite entry
+                if (!testCaseUpdated) {
+                    // return 404 error
+                    console.warn(`Test case "${testCaseName}" not found in existing suites, creating new entry`);
+                    continue;
+
+                }
+            }
         }
 
         // Update the stored suites in Cosmos DB
@@ -875,39 +915,25 @@ app.post('/:resourceId/createIssue/:testCaseId', ensureCosmosInitialized, async 
 
         // Prepare response
         const response: any = {
-            success: issueCreationStatus === 'Created',
-            message: issueCreationStatus === 'Created' 
-                ? 'GitHub issue created successfully' 
-                : 'Failed to create GitHub issue, but test case updated',
-            testCaseId,
+            success: totalSuccessful > 0,
+            message: `Processed ${totalProcessed} test cases. ${totalSuccessful} GitHub issues created successfully.`,
+            summary: {
+                totalProcessed,
+                totalSuccessful,
+                totalFailed: totalProcessed - totalSuccessful
+            },
             resourceId,
-            status: issueCreationStatus,
             suites
         };
 
-        if (githubIssue) {
-            response.githubIssue = {
-                id: githubIssue.id,
-                number: githubIssue.number,
-                title: githubIssue.title,
-                url: githubIssue.html_url,
-                state: githubIssue.state,
-                created_at: githubIssue.created_at
-            };
-        }
-
-        if (errorDetails) {
-            response.error = errorDetails;
-        }
-
         // Return appropriate status code
-        const statusCode = issueCreationStatus === 'Created' ? 201 : 500;
+        const statusCode = totalSuccessful > 0 ? 201 : 500;
         res.status(statusCode).json(response);
 
     } catch (error: any) {
         console.error('Error in createIssue endpoint:', error);
         res.status(500).json({
-            error: 'Failed to create GitHub issue',
+            error: 'Failed to create GitHub issues',
             details: error.message,
             success: false
         });
