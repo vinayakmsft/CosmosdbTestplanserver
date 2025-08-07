@@ -190,7 +190,7 @@ export class CosmosService {
 
             for (const suite of suites) {
                 // Use test plan ID as the document ID for test suites
-                const documentId = suite.id.
+                const documentId = suite.id.toString();
                 
                 const suiteToSave = {
                     ...suite,
@@ -209,18 +209,22 @@ export class CosmosService {
         }
     }
 
-    async getTestSuites(resourceId: string): Promise<TestSuite[]> {
+    async getTestSuites(resourceId: string, testPlanId: string): Promise<TestSuite[]> {
         try {
             if (!this.isInitialized) {
                 throw new Error('CosmosService not initialized. Call initialize() first.');
             }
 
             const querySpec = {
-                query: 'SELECT * FROM c WHERE c.resourceId = @resourceId',
+                query: 'SELECT * FROM c WHERE c.resourceId = @resourceId AND c.testplanid = @testPlanId',
                 parameters: [
                     {
                         name: '@resourceId',
                         value: resourceId
+                    },
+                    {
+                        name: '@testPlanId',
+                        value: testPlanId
                     }
                 ]
             };

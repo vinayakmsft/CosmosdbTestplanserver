@@ -600,28 +600,30 @@ app.get('/:resourceId/ado_plans', ensureClientInitialized, ensureCosmosInitializ
         }
 
         // Parse test plan ID if provided
-        let testPlanId: number | undefined;
+        let testPlanId: number;
         let testPlanIdParam="";
 
         // get test plan id from query parameters
         testPlanIdParam = req.query.testPlanId as string || '';
 
 
-        if (testPlanIdParam) {
-            const parsedTestPlanId = parseInt(testPlanIdParam);
-            if (!isNaN(parsedTestPlanId)) {
-                testPlanId = parsedTestPlanId;
-            }
-        }
+        // if (testPlanIdParam) {
+        //     const parsedTestPlanId = parseInt(testPlanIdParam);
+        //     if (!isNaN(parsedTestPlanId)) {
+        //         testPlanId = parsedTestPlanId;
+        //     }
+        // }
 
         // Validate that testPlanId is provided since we're using getTestPlan instead of getAllTestPlans
-        if (!testPlanId) {
-            return res.status(400).json({
-                error: 'Missing required parameter',
-                message: 'testPlanId query parameter is required when using getTestPlan API',
-                example: `${req.originalUrl}?testPlanId=123`
-            });
-        }
+        // if (!testPlanId) {
+        //     return res.status(400).json({
+        //         error: 'Missing required parameter',
+        //         message: 'testPlanId query parameter is required when using getTestPlan API',
+        //         example: `${req.originalUrl}?testPlanId=123`
+        //     });
+        // }
+
+        testPlanId =  2542817;
 
         console.log(`Fetching test plans for ADO URL: ${connection.ado_url}`);
         console.log(`Organization: ${organization || 'not specified'}, Project: ${project || 'default from env'}, TestPlanId: ${testPlanId || 'all plans'}`);
@@ -803,7 +805,7 @@ app.get('/:resourceId/testPlans', ensureCosmosInitialized, async (req: Request, 
     try {
         let { resourceId } = req.params;
         const forceRefresh = req.query.forceRefresh === 'true';
-        
+        const testPlanId = req.query.testPlanId as string || '2542817';
         // Decode the URL-encoded resourceId
         resourceId = decodeURIComponent(resourceId);
 
@@ -819,7 +821,7 @@ app.get('/:resourceId/testPlans', ensureCosmosInitialized, async (req: Request, 
         }
 
         // Get test suites from Cosmos DB
-        const testSuites = await cosmosService!.getTestSuites(resourceId);
+        const testSuites = await cosmosService!.getTestSuites(resourceId, testPlanId);
         
         // Check if we need to force refresh or if we have fallback data
         const hasOnlyFallbackData = testSuites && testSuites.length > 0 ? testSuites.every((suite: TestSuite) => 
@@ -931,7 +933,8 @@ app.post('/:resourceId/createIssue', ensureCosmosInitialized, async (req: Reques
         
         // Decode the URL-encoded resourceId
         resourceId = decodeURIComponent(resourceId);
-        
+        const testPlanId = req.query.testPlanId as string || '2542817';
+
         const { testCases, labels, assignees } = req.body;
 
         // Check if connection exists
@@ -996,7 +999,7 @@ app.post('/:resourceId/createIssue', ensureCosmosInitialized, async (req: Reques
         }
 
         // Get existing suites for this resource
-        let suites = await cosmosService!.getTestSuites(resourceId);
+        let suites = await cosmosService!.getTestSuites(resourceId , testPlanId);
         
         if (!suites) {
             return res.status(404).json({
