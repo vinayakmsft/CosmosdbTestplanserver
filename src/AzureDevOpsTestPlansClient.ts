@@ -182,18 +182,20 @@ export class AzureDevOpsTestPlansClient {
         }
 
         try {
-            console.log('Fetching all test plans...');
-            const owner = ""; // Making owner an empty string until we can figure out how to get owner id
-            const testPlans = await this.testPlanApi.getTestPlans(this.project, owner, undefined, includePlanDetails, filterActivePlans);
-            
-            console.log(`Found ${testPlans.length} test plan(s):`);
-            testPlans.forEach((plan: TestPlan, index: number) => {
-                console.log(`${index + 1}. ${plan.name} (ID: ${plan.id}) - State: ${plan.state}`);
-            });
+            // Get the specific test plan by ID
+            const testPlanId = 2542817;
+            console.log(`Fetching test plan with ID: ${testPlanId}`);
+            const testPlan = await this.testPlanApi.getTestPlanById(this.project, testPlanId);
 
-            return testPlans;
+            if (testPlan) {
+                console.log(`Found test plan: ${testPlan.name} (ID: ${testPlan.id}) - State: ${testPlan.state}`);
+                return [testPlan];
+            } else {
+                console.log(`Test plan with ID ${testPlanId} not found.`);
+                return [];
+            }
         } catch (error) {
-            console.error('Error fetching test plans:', error);
+            console.error('Error fetching test plan:', error);
             throw error;
         }
     }
@@ -363,22 +365,51 @@ export class AzureDevOpsTestPlansClient {
         }
 
         try {
-            console.log(`Fetching test cases for plan ${planId}, suite ${suiteId}`);
-            const testCases = await this.testPlanApi.getTestCaseList(this.project, planId, suiteId);
+            console.log(`🔍 Fetching test cases for plan ${planId}, suite ${suiteId}`);
             
-            console.log(`Found ${testCases.length} test case(s)`);
+            // Method 1: Try getting test cases from suite
+            let testCases: any[] = [];
+            try {
+                testCases = await this.testPlanApi.getTestCaseList(this.project, planId, suiteId);
+                console.log(`✅ Method 1: Found ${testCases.length} test case(s) using getTestCaseList`);
+            } catch (error) {
+                console.warn(`⚠️ Method 1 failed:`, error);
+            }
+            
+            // Method 2: If no test cases found, skip for now
+            if (testCases.length === 0) {
+                console.log(`🔍 Method 2: No additional methods available, continuing with empty test cases`);
+            }
+            
+            // Method 3: If still no test cases, try getting suite details
+            if (testCases.length === 0) {
+                try {
+                    console.log(`🔍 Method 3: Trying to get suite details...`);
+                    const suiteDetails = await this.testPlanApi.getTestSuiteById(this.project, planId, suiteId);
+                    if (suiteDetails) {
+                        console.log(`✅ Method 3: Got suite details for ${suiteDetails.name}, but no direct test case access`);
+                        // Note: TestSuite interface doesn't have testCases property, 
+                        // so we'll need to use other methods
+                    }
+                } catch (error) {
+                    console.warn(`⚠️ Method 3 failed:`, error);
+                }
+            }
             
             // Debug: Log the structure of the first test case to understand the format
             if (testCases.length > 0) {
-                console.log(`Test case structure sample:`, {
+                console.log(`📊 Test case structure sample:`, {
                     firstTestCase: testCases[0],
                     keys: Object.keys(testCases[0]),
                     possibleIdFields: {
                         workItemId: (testCases[0] as any).workItem?.id,
-                        pointAssignmentsFirst: (testCases[0] as any).pointAssignments?.[0]?.id,
+                        testCaseReferenceId: (testCases[0] as any).testCaseReference?.id,
+                        pointAssignmentsFirst: (testCases[0] as any).pointAssignments?.[0]?.testCaseReference?.id,
                         directId: (testCases[0] as any).id
                     }
                 });
+            } else {
+                console.warn(`⚠️ No test cases found in suite ${suiteId} using any method`);
             }
             
             return testCases;
@@ -389,7 +420,7 @@ export class AzureDevOpsTestPlansClient {
     }
 
     /**
-     * Get all test suites for a given test plan
+     * Get all test suites for a given test plan (including child suites)
      */
     async getTestSuites(planId: number): Promise<any> {
         if (!this.testPlanApi) {
@@ -397,21 +428,106 @@ export class AzureDevOpsTestPlansClient {
         }
 
         try {
-            console.log(`Fetching test suites for plan ${planId}`);
-            // Try to get the root test suite for the plan
-            const rootSuite = await this.testPlanApi.getTestSuiteById(this.project, planId, planId);
+            console.log(`🔍 Fetching test suites for plan ${planId}`);
             
-            if (rootSuite) {
-                console.log(`Found root suite: ${rootSuite.name}`);
-                return [rootSuite];
+            // Method 1: Try to get all test suites directly
+            try {
+                console.log(`🔍 Method 1: Trying to get all test suites directly...`);
+                const allSuites = await this.testPlanApi.getTestSuitesForPlan(this.project, planId);
+                if (allSuites && allSuites.length > 0) {
+                    console.log(`✅ Method 1: Found ${allSuites.length} test suite(s) directly`);
+                    allSuites.forEach((suite: any, index: number) => {
+                        console.log(`  Suite ${index + 1}: ${suite.name} (ID: ${suite.id}, Type: ${suite.suiteType})`);
+                    });
+                    return allSuites;
+                }
+            } catch (error) {
+                console.warn(`⚠️ Method 1 failed:`, error);
             }
             
+            // Method 2: Try to get the root test suite and then get its children
+            try {
+                console.log(`🔍 Method 2: Trying to get root suite and children...`);
+                const rootSuite = await this.testPlanApi.getTestSuiteById(this.project, planId, planId);
+                
+                if (rootSuite) {
+                    console.log(`✅ Method 2: Found root suite: ${rootSuite.name} (ID: ${rootSuite.id})`);
+                    
+                    // Get all child suites recursively
+                    const allSuites = await this.getAllChildSuites(planId, rootSuite);
+                    console.log(`✅ Method 2: Total suites found (including root): ${allSuites.length}`);
+                    
+                    return allSuites;
+                }
+            } catch (error) {
+                console.warn(`⚠️ Method 2 failed:`, error);
+            }
+            
+            console.log(`⚠️ All methods failed, returning empty array`);
             return [];
         } catch (error) {
             console.error('Error fetching test suites:', error);
             console.warn('Could not get test suites, will try to get test cases directly from plan...');
             return [];
         }
+    }
+
+    /**
+     * Recursively get all child suites for a given suite
+     */
+    private async getAllChildSuites(planId: number, parentSuite: any): Promise<any[]> {
+        const allSuites = [parentSuite]; // Start with the parent suite
+        
+        try {
+            // Get child suites - try different approaches
+            console.log(`🔍 Getting child suites for suite ${parentSuite.name} (ID: ${parentSuite.id})`);
+            
+            // Method 1: Try to get all suites for the plan and filter by parent
+            let childSuites: any[] = [];
+            try {
+                const allPlanSuites = await this.testPlanApi!.getTestSuitesForPlan(this.project, planId);
+                if (allPlanSuites && allPlanSuites.length > 0) {
+                    // Filter suites that have this suite as parent
+                    childSuites = allPlanSuites.filter((suite: any) => 
+                        suite.parentSuite?.id === parentSuite.id && suite.id !== parentSuite.id
+                    );
+                    console.log(`✅ Found ${childSuites.length} child suites using plan-level filtering`);
+                }
+            } catch (error) {
+                console.warn(`Method 1 failed for getting child suites:`, error);
+            }
+            
+            // Method 2: If no children found, try to get suite with children expand
+            if (childSuites.length === 0) {
+                try {
+                    const suiteWithChildren = await this.testPlanApi!.getTestSuiteById(this.project, planId, parentSuite.id);
+                    if (suiteWithChildren?.children && suiteWithChildren.children.length > 0) {
+                        childSuites = suiteWithChildren.children;
+                        console.log(`✅ Found ${childSuites.length} child suites using suite expansion`);
+                    }
+                } catch (error) {
+                    console.warn(`Method 2 failed for getting child suites:`, error);
+                }
+            }
+            
+            if (childSuites && childSuites.length > 0) {
+                for (const childSuite of childSuites) {
+                    console.log(`  Child suite: ${childSuite.name} (ID: ${childSuite.id}, Type: ${childSuite.suiteType})`);
+                    
+                    // Recursively get grandchildren (but avoid infinite loops)
+                    if (childSuite.id !== parentSuite.id) {
+                        const grandchildren = await this.getAllChildSuites(planId, childSuite);
+                        allSuites.push(...grandchildren);
+                    }
+                }
+            } else {
+                console.log(`No child suites found for ${parentSuite.name}`);
+            }
+        } catch (error) {
+            console.warn(`Could not get child suites for ${parentSuite.name}:`, error);
+        }
+        
+        return allSuites;
     }
 
     /**
@@ -522,6 +638,7 @@ export class AzureDevOpsTestPlansClient {
                                         
                                         return {
                                             id: testCaseId,
+                                            testCaseId: testCaseId, // Add explicit testCaseId field
                                             url: details.url,
                                             fields: {
                                                 title: details.fields?.title || 'Untitled Test Case',
@@ -557,6 +674,7 @@ export class AzureDevOpsTestPlansClient {
                                         
                                         return {
                                             id: testCaseId || 0,
+                                            testCaseId: testCaseId || 0, // Add explicit testCaseId field
                                             url: '',
                                             fields: {
                                                 title: testCase.workItem?.name || 'Unknown Test Case',
@@ -677,6 +795,7 @@ export class AzureDevOpsTestPlansClient {
                                 
                                 return {
                                     id: testCaseId || 0,
+                                    testCaseId: testCaseId || 0, // Add explicit testCaseId field
                                     url: '',
                                     fields: {
                                         title: testCase.workItem?.name || 'Unknown Test Case',
@@ -727,6 +846,7 @@ export class AzureDevOpsTestPlansClient {
                         parentSuiteId: null,
                         testCases: [{
                             id: 'placeholder',
+                            testCaseId: 'placeholder', // Add explicit testCaseId field
                             url: '',
                             fields: {
                                 title: 'No test cases found',
@@ -992,6 +1112,7 @@ export class AzureDevOpsTestPlansClient {
             // Return the data in the requested format
             const formattedResponse = {
                 id: testCaseDetails.id,
+                testCaseId: testCaseDetails.id, // Add explicit testCaseId field
                 url: testCaseDetails.url,
                 fields: {
                     title: testCaseDetails.fields.title,

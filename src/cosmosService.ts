@@ -15,6 +15,7 @@ export interface Connection {
 }
 
 export interface TestCase {
+    testCaseId?: string; // Add testCaseId field
     name: string;
     steps: string[];
     detailedSteps?: Array<{action: string, expectedResult: string}>;
