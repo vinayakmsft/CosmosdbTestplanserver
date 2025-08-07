@@ -138,7 +138,8 @@ app.get('/', (req: Request, res: Response) => {
             'POST /:resourceId/saveConnection': 'Save connection configuration',
             'GET /:resourceId': 'Get connection configuration',
             'GET /:resourceId/ado_plans': 'Get ADO test plans and suites',
-            'POST /:resourceId/createIssue/:testCaseId': 'Create multiple GitHub issues for test cases (adds automated labels)',
+            'POST /:resourceId/createIssue': 'Create multiple GitHub issues for test cases (adds automated labels)',
+            'GET /:resourceId/testPlans': 'Get existing test plans from database (supports ?forceRefresh=true)',
             'GET /:resourceId/github/test': 'Test GitHub connection and repository access'
         },
         documentation: 'See README.md for detailed API documentation'
@@ -588,7 +589,7 @@ app.get('/:resourceId/ado_plans', ensureClientInitialized, ensureCosmosInitializ
         console.log(`Organization: ${organization}, Project: ${project || 'default from env'}`);
 
         let testPlans;
-        
+        connection.ado_url ="https://devdiv.visualstudio.com";
         // Option 1: Create a new ADO client with the connection info
         if (connection.ado_url && connection.ado_url !== process.env.AZURE_DEVOPS_ORG_URL) {
             console.log('Creating new ADO client with connection-specific URL...');
@@ -640,6 +641,7 @@ app.get('/:resourceId/ado_plans', ensureClientInitialized, ensureCosmosInitializ
                     const transformedTestCases = suite.testCases.map((testCase: any) => {
                         console.log(`Step 4: Processing test case ID ${testCase.id}: "${testCase.fields?.title || 'Untitled'}"`, {
                             testCaseId: testCase.id,
+                            testCaseIdField: testCase.testCaseId,
                             title: testCase.fields?.title,
                             hasSteps: !!(testCase.parsedSteps && testCase.parsedSteps.length > 0),
                             stepCount: testCase.parsedSteps?.length || 0
@@ -662,6 +664,7 @@ app.get('/:resourceId/ado_plans', ensureClientInitialized, ensureCosmosInitializ
                         }
                         
                         return {
+                            testCaseId: testCase.testCaseId || testCase.id, // Add testCaseId field
                             name: testCase.fields?.title || 'Untitled Test Case',
                             steps: steps
                         };
@@ -679,7 +682,6 @@ app.get('/:resourceId/ado_plans', ensureClientInitialized, ensureCosmosInitializ
             } catch (error) {
                 console.warn(`⚠️ Could not process test plan ${plan.name} (ID: ${plan.id}):`, error);
                 
-                
             }
         }
 
@@ -692,6 +694,7 @@ app.get('/:resourceId/ado_plans', ensureClientInitialized, ensureCosmosInitializ
             name: suite.name,
             testCaseId: suite.testCaseId,
             testCases: suite.testCases.map((tc: any) => ({
+                testCaseId: tc.testCaseId, // Add testCaseId field to each test case
                 name: tc.name,
                 steps: tc.steps
             }))
@@ -709,7 +712,293 @@ app.get('/:resourceId/ado_plans', ensureClientInitialized, ensureCosmosInitializ
 });
 
 /**
- * POST /:resourceId/createIssue
+ * GET /:resourceId/testPlans
+ * Get existing test plans from database for a resource
+ * Query params: forceRefresh (boolean) - if true, re-fetch from ADO even if data exists
+ */
+app.get('/:resourceId/testPlans', ensureCosmosInitialized, async (req: Request, res: Response) => {
+    try {
+        let { resourceId } = req.params;
+        const forceRefresh = req.query.forceRefresh === 'true';
+        
+        // Decode the URL-encoded resourceId
+        resourceId = decodeURIComponent(resourceId);
+
+        console.log(`Fetching existing test plans for resourceId: ${resourceId}, forceRefresh: ${forceRefresh}`);
+
+        // Check if connection exists
+        const connection = await cosmosService!.getConnection(resourceId);
+        if (!connection) {
+            return res.status(404).json({
+                error: 'Connection not found',
+                message: `No connection found for resourceId: ${resourceId}. Please save connection first.`
+            });
+        }
+
+        // Get test suites from Cosmos DB
+        const testSuites = await cosmosService!.getTestSuites(resourceId);
+        
+        // Check if we need to force refresh or if we have fallback data
+        const hasOnlyFallbackData = testSuites && testSuites.length > 0 ? testSuites.every((suite: TestSuite) => 
+            suite.testCases.every((testCase: TestCase) => 
+                testCase.name.includes('could not be processed') ||
+                testCase.name.includes('Error occurred while fetching') ||
+                (testCase.steps && testCase.steps.some((step: string) => 
+                    step.includes('Error occurred while fetching test cases') ||
+                    step.includes('fallback test case 17') ||
+                    step.includes('Please check the test plan configuration')
+                ))
+            )
+        ) : false;
+
+        console.log(`🔍 Fallback data detection: hasOnlyFallbackData=${hasOnlyFallbackData}, forceRefresh=${forceRefresh}, testSuites.length=${testSuites?.length || 0}`);
+
+        if (forceRefresh || hasOnlyFallbackData || !testSuites || testSuites.length === 0) {
+            console.log(`${forceRefresh ? 'Force refresh requested' : hasOnlyFallbackData ? 'Fallback data detected' : 'No data found'}, fetching fresh data from Azure DevOps...`);
+            
+            // Redirect to ado_plans endpoint logic but return the result directly
+            try {
+                if (!adoClient) {
+                    return res.status(500).json({
+                        error: 'Azure DevOps client not initialized',
+                        message: 'Cannot refresh data from ADO, server not properly configured'
+                    });
+                }
+
+                // Fetch fresh data from ADO (simplified version of ado_plans logic)
+                let testPlans;
+                
+                // Parse ADO URL to get organization and project info
+                const adoUrlMatch = connection.ado_url.match(/https:\/\/dev\.azure\.com\/([^\/]+)\/?(.*)?/);
+                let canUseConnectionClient = false;
+                
+                if (adoUrlMatch) {
+                    canUseConnectionClient = true;
+                    console.log(`✅ Valid ADO URL format detected: ${connection.ado_url}`);
+                } else {
+                    console.log(`⚠️ ADO URL format not compatible with connection-specific client: ${connection.ado_url}`);
+                }
+                 connection.ado_url ="https://devdiv.visualstudio.com";
+                if (canUseConnectionClient && connection.ado_url !== process.env.AZURE_DEVOPS_ORG_URL) {
+                    console.log('Creating new ADO client with connection-specific URL for refresh...');
+                    try {
+                        const connectionAdoClient = await AzureDevOpsTestPlansClient.createWithConnectionInfo(connection.ado_url);
+                        testPlans = await connectionAdoClient.getAllTestPlans(true, true);
+                        console.log(`✅ Successfully fetched ${testPlans.length} test plans using connection-specific client`);
+                    } catch (error) {
+                        console.warn('Failed to use connection-specific ADO client, falling back to default:', error);
+                        testPlans = await adoClient!.getAllTestPlans(true, true);
+                    }
+                } else {
+                    console.log('Using default ADO client for refresh...');
+                    testPlans = await adoClient!.getAllTestPlans(true, true);
+                }
+
+                // Process and save the fresh data (same as ado_plans endpoint)
+                const suites: any[] = [];
+                for (const plan of testPlans) {
+                    try {
+                        let planWithSuitesAndTestCases;
+                        
+                        // Use the same client selection logic as above
+                        if (canUseConnectionClient && connection.ado_url !== process.env.AZURE_DEVOPS_ORG_URL) {
+                            console.log(`🔄 Processing plan ${plan.name} with connection-specific client...`);
+                            const connectionAdoClient = await AzureDevOpsTestPlansClient.createWithConnectionInfo(connection.ado_url);
+                            planWithSuitesAndTestCases = await connectionAdoClient.getTestPlanWithSuitesAndTestCases(plan.id!);
+                        } else {
+                            console.log(`🔄 Processing plan ${plan.name} with default client...`);
+                            planWithSuitesAndTestCases = await adoClient!.getTestPlanWithSuitesAndTestCases(plan.id!);
+                        }
+                        
+                        for (const suite of planWithSuitesAndTestCases.suites) {
+                            console.log(`📋 Processing suite: ${suite.name} with ${suite.testCases.length} test cases`);
+                            
+                            const transformedTestCases = suite.testCases.map((testCase: any) => {
+                                console.log(`📝 Processing test case: ${testCase.fields?.title || 'Untitled'} (ID: ${testCase.id})`);
+                                
+                                let steps: string[] = [];
+                                if (testCase.parsedSteps && testCase.parsedSteps.length > 0) {
+                                    console.log(`✅ Found ${testCase.parsedSteps.length} parsed steps for test case ${testCase.id}`);
+                                    steps = testCase.parsedSteps.map((step: any, index: number) => {
+                                        if (step.action && step.expectedResult) {
+                                            return `Step ${index + 1}: ${step.action} - Expected: ${step.expectedResult}`;
+                                        } else if (step.action) {
+                                            return `Step ${index + 1}: ${step.action}`;
+                                        } else {
+                                            return `Step ${index + 1}: No action specified`;
+                                        }
+                                    });
+                                } else {
+                                    console.log(`⚠️ No parsed steps found for test case ${testCase.id}`);
+                                    steps = ["No test steps available"];
+                                }
+                                
+                                return {
+                                    testCaseId: testCase.testCaseId || testCase.id,
+                                    name: testCase.fields?.title || 'Untitled Test Case',
+                                    steps: steps
+                                };
+                            });
+
+                            suites.push({
+                                name: `${plan.name} - ${suite.name}`,
+                                testCaseId: `${plan.id}-${suite.id}`,
+                                testCases: transformedTestCases
+                            });
+                        }
+                    } catch (error) {
+                        console.error(`❌ Could not process test plan ${plan.name} during refresh:`, error);
+                        // Skip fallback for refresh - if it fails, don't save bad data
+                        // This prevents saving more fallback error data
+                    }
+                }
+
+                if (suites.length === 0) {
+                    console.warn('⚠️ No suites were successfully processed during refresh');
+                    return res.status(500).json({
+                        error: 'Failed to refresh test plans',
+                        message: 'No test plans could be processed successfully. Check Azure DevOps connection and permissions.',
+                        details: 'All test plans failed to process during refresh attempt'
+                    });
+                }
+
+                // Save the fresh suites to Cosmos DB
+                const cosmosTestSuites: TestSuite[] = suites.map((suite: any) => ({
+                    resourceId,
+                    name: suite.name,
+                    testCaseId: suite.testCaseId,
+                    testCases: suite.testCases.map((tc: any) => ({
+                        testCaseId: tc.testCaseId,
+                        name: tc.name,
+                        steps: tc.steps
+                    }))
+                }));
+                await cosmosService!.saveTestSuites(resourceId, cosmosTestSuites);
+
+                console.log(`✅ Refreshed and saved ${suites.length} suites with fresh data from ADO`);
+                
+                // Continue with the fresh data
+                const freshTestSuites = cosmosTestSuites;
+                return res.json({
+                    suites: freshTestSuites.map((suite: TestSuite) => ({
+                        name: suite.name,
+                        testCaseId: suite.testCaseId,
+                        testCases: suite.testCases.map((testCase: TestCase, index: number) => {
+                            let enhancedSteps: any[] = [];
+                            if (testCase.steps && Array.isArray(testCase.steps)) {
+                                enhancedSteps = testCase.steps.map((step: string, stepIndex: number) => {
+                                    const stepMatch = step.match(/^Step (\d+):\s*(.+?)(?:\s*-\s*Expected:\s*(.+))?$/);
+                                    if (stepMatch) {
+                                        const stepNumber = stepMatch[1];
+                                        const stepDescription = stepMatch[2];
+                                        const expectedResult = stepMatch[3];
+                                        
+                                        return {
+                                            stepName: `Step ${stepNumber}`,
+                                            stepDescription: expectedResult ? 
+                                                `${stepDescription} - Expected: ${expectedResult}` : 
+                                                stepDescription
+                                        };
+                                    } else {
+                                        return {
+                                            stepName: `Step ${stepIndex + 1}`,
+                                            stepDescription: step
+                                        };
+                                    }
+                                });
+                            }
+
+                            return {
+                                testCaseId: testCase.testCaseId || `${suite.testCaseId}-${index + 1}`,
+                                name: testCase.name,
+                                steps: testCase.steps || [],
+                                status: testCase.status || 'Not Started',
+                                issueId: testCase.issueId || '',
+                                issueUrl: testCase.githubUrl || '',
+                                enhanced_Steps: enhancedSteps
+                            };
+                        })
+                    })),
+                    refreshed: true,
+                    message: 'Data refreshed from Azure DevOps'
+                });
+
+            } catch (refreshError: any) {
+                console.error('Failed to refresh data from ADO:', refreshError);
+                return res.status(500).json({
+                    error: 'Failed to refresh data from Azure DevOps',
+                    details: refreshError.message,
+                    suggestion: 'Check Azure DevOps connection settings and permissions'
+                });
+            }
+        }
+        
+        if (!testSuites || testSuites.length === 0) {
+            return res.json({
+                suites: [],
+                message: 'No test plans found for this resource. Please fetch test plans from Azure DevOps first.'
+            });
+        }
+
+        console.log(`Found ${testSuites.length} test suite(s) for resourceId: ${resourceId}`);
+
+        // Transform the data to match the requested format
+        const suites = testSuites.map((suite: TestSuite) => ({
+            name: suite.name,
+            testCaseId: suite.testCaseId,
+            testCases: suite.testCases.map((testCase: TestCase, index: number) => {
+                // Parse steps to create enhanced_Steps format
+                let enhancedSteps: any[] = [];
+                if (testCase.steps && Array.isArray(testCase.steps)) {
+                    enhancedSteps = testCase.steps.map((step: string, stepIndex: number) => {
+                        // Extract step name and description from the step string
+                        const stepMatch = step.match(/^Step (\d+):\s*(.+?)(?:\s*-\s*Expected:\s*(.+))?$/);
+                        if (stepMatch) {
+                            const stepNumber = stepMatch[1];
+                            const stepDescription = stepMatch[2];
+                            const expectedResult = stepMatch[3];
+                            
+                            return {
+                                stepName: `Step ${stepNumber}`,
+                                stepDescription: expectedResult ? 
+                                    `${stepDescription} - Expected: ${expectedResult}` : 
+                                    stepDescription
+                            };
+                        } else {
+                            return {
+                                stepName: `Step ${stepIndex + 1}`,
+                                stepDescription: step
+                            };
+                        }
+                    });
+                }
+
+                return {
+                    testCaseId: testCase.testCaseId || `${suite.testCaseId}-${index + 1}`, // Use stored testCaseId or create one
+                    name: testCase.name,
+                    steps: testCase.steps || [],
+                    status: testCase.status || 'Not Started',
+                    issueId: testCase.issueId || '',
+                    issueUrl: testCase.githubUrl || '',
+                    enhanced_Steps: enhancedSteps
+                };
+            })
+        }));
+
+        console.log(`Returning ${suites.length} suite(s) with ${suites.reduce((total, suite) => total + suite.testCases.length, 0)} total test cases`);
+
+        res.json({ suites });
+    } catch (error: any) {
+        console.error('Error fetching existing test plans:', error);
+        res.status(500).json({
+            error: 'Failed to fetch existing test plans',
+            details: error.message
+        });
+    }
+});
+
+/**
+ * * POST /:resourceId/createIssue
  * Create GitHub issues for multiple test cases (automatically adds API tracking labels)
  * Body: { 
  *   testCases: [
@@ -721,7 +1010,7 @@ app.get('/:resourceId/ado_plans', ensureClientInitialized, ensureCosmosInitializ
  *   labels?: string[],
  *   assignees?: string[]
  * }
- */
+ * */
 app.post('/:resourceId/createIssue', ensureCosmosInitialized, async (req: Request, res: Response) => {
     try {
         let { resourceId } = req.params;
