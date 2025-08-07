@@ -35,7 +35,8 @@ export interface TestCase {
 }
 
 export interface TestSuite {
-    id?: string;
+    id: string;
+    testplanid:string;
     resourceId: string;
     name: string;
     testCaseId: string;
@@ -188,12 +189,12 @@ export class CosmosService {
             const savedSuites: TestSuite[] = [];
 
             for (const suite of suites) {
-                // Create a safe document ID by encoding the resourceId and testCaseId
-                const safeId = `suite_${Buffer.from(`${resourceId}_${suite.testCaseId}`).toString('base64').replace(/[^a-zA-Z0-9]/g, '_')}`;
+                // Use test plan ID as the document ID for test suites
+                const documentId = suite.id.
                 
                 const suiteToSave = {
                     ...suite,
-                    id: safeId,
+                    id: documentId,
                     resourceId
                 };
 
@@ -303,11 +304,11 @@ export class CosmosService {
             const savedPlans: TestPlan[] = [];
 
             for (const plan of testPlans) {
-                // Create a safe document ID by encoding the resourceId and planId
-                const safeId = `plan_${Buffer.from(`${resourceId}_${plan.id}`).toString('base64').replace(/[^a-zA-Z0-9]/g, '_')}`;
+                // Use test plan ID directly as the document ID
+                const documentId = plan.id.toString();
                 
                 const planToSave: TestPlan = {
-                    id: safeId,
+                    id: documentId,
                     resourceId,
                     planId: plan.id,
                     name: plan.name,
