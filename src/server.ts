@@ -705,6 +705,8 @@ app.get('/:resourceId/ado_plans', ensureClientInitialized, ensureCosmosInitializ
 
         // Save the suites to Cosmos DB (keeping the existing suite structure for compatibility)
         const cosmosTestSuites: TestSuite[] = suites.map((suite: any) => ({
+            id: suite.testPlanId || '', // Add required id field
+            testplanid: suite.testPlanId || '', // Add required testplanid field
             resourceId,
             name: suite.name,
             testCaseId: suite.testCaseId,
@@ -879,6 +881,8 @@ app.get('/:resourceId/testPlans', ensureCosmosInitialized, async (req: Request, 
 
                 // Save the fresh suites to Cosmos DB
                 const cosmosTestSuites: TestSuite[] = suites.map((suite: any) => ({
+                    id: suite.testPlanId || '', // Add required id field
+                    testplanid: suite.testPlanId || '', // Add required testplanid field
                     resourceId,
                     name: suite.name,
                     testCaseId: suite.testCaseId,
@@ -1141,6 +1145,8 @@ app.post('/:resourceId/createIssue/:testCaseId', ensureCosmosInitialized, async 
         if (!issueUpdated) {
             // If test case not found, create a new suite entry
             const newSuite: TestSuite = {
+                id: 'github_issue_suite', // Add required id field
+                testplanid: 'github_issue_suite', // Add required testplanid field
                 resourceId,
                 name: "GitHub Issue Suite",
                 testCaseId,
@@ -1382,6 +1388,131 @@ app.post('/api/testplans/recommendations', ensureClientInitialized, async (req: 
         });
     }
 });
+
+// API for running the playwright script
+
+/**
+ * GET /:resource/:testPlan/run/:testCaseId
+ * Run the sample Playwright test in headed mode with single Chromium browser and wait for completion
+ */
+app.get('/:resource/:testPlan/run/:testCaseId', async (req: Request, res: Response) => {
+    try {
+        const { resource, testPlan, testCaseId } = req.params;
+        
+        console.log(`🎭 Starting Playwright test execution in headed mode for resource: ${resource}, testPlan: ${testPlan}, testCaseId: ${testCaseId}`);
+        
+        const startTime = new Date().toISOString();
+        const { spawn } = require('child_process');
+        const path = require('path');
+        
+        // Try different approaches to run Playwright
+        let command: string;
+        let args: string[];
+        
+        // First, try to use the local node_modules/.bin/playwright
+        const localPlaywright = path.join(process.cwd(), 'node_modules', '.bin', 'playwright.cmd');
+        const localPlaywrightJs = path.join(process.cwd(), 'node_modules', '@playwright', 'test', 'cli.js');
+        const fs = require('fs');
+        
+        if (fs.existsSync(localPlaywright)) {
+            // Use local Playwright installation (Windows) - run only on chromium project
+            command = localPlaywright;
+            args = ['test', 'tests/sample.spec.ts', '--headed', '--project=chromium', '--workers=1'];
+            console.log('Using local Playwright installation:', localPlaywright, 'with single chromium browser');
+        } else if (fs.existsSync(localPlaywrightJs)) {
+            // Use Node.js to run Playwright directly - run only on chromium project
+            command = process.execPath; // Use current Node.js executable
+            args = [localPlaywrightJs, 'test', 'tests/sample.spec.ts', '--headed', '--project=chromium', '--workers=1'];
+            console.log('Using Node.js to run Playwright:', localPlaywrightJs, 'with single chromium browser');
+        } else {
+            // Fallback to npx with full path resolution - run only on chromium project
+            command = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+            args = ['playwright', 'test', 'tests/sample.spec.ts', '--headed', '--project=chromium', '--workers=1'];
+            console.log('Using npx command:', command, 'with single chromium browser');
+        }
+        
+        // Run the test and wait for completion
+        const testProcess = spawn(command, args, {
+            cwd: process.cwd(),
+            stdio: 'pipe',
+            shell: true // This helps with Windows path resolution
+        });
+
+        let stdout = '';
+        let stderr = '';
+        let lastOutputTime = Date.now();
+
+        testProcess.stdout.on('data', (data: Buffer) => {
+            const output = data.toString();
+            stdout += output;
+            lastOutputTime = Date.now();
+            console.log(`📤 [STDOUT] ${output.trim()}`);
+        });
+
+        testProcess.stderr.on('data', (data: Buffer) => {
+            const output = data.toString();
+            stderr += output;
+            lastOutputTime = Date.now();
+            console.error(`📤 [STDERR] ${output.trim()}`);
+        });
+
+        // Progress monitoring - log every 30 seconds to show the test is still running
+        const progressInterval = setInterval(() => {
+            const runningTime = Math.floor((Date.now() - new Date(startTime).getTime()) / 1000);
+            console.log(`🎭 Playwright test still running... (${runningTime}s elapsed) for resource: ${resource}, testPlan: ${testPlan}, testCaseId: ${testCaseId}`);
+        }, 30000);
+
+        // Wait for the test to complete
+        const exitCode = await new Promise<number>((resolve, reject) => {
+            testProcess.on('spawn', () => {
+                console.log('✅ Playwright process spawned successfully');
+            });
+
+            testProcess.on('close', (code: number) => {
+                clearInterval(progressInterval);
+                resolve(code);
+            });
+
+            testProcess.on('error', (err: Error) => {
+                clearInterval(progressInterval);
+                reject(err);
+            });
+        });
+
+        const success = exitCode === 0;
+        console.log(`✅ Test execution completed in  with ${success ? 'success' : 'failure'}`);
+
+        // Return response after test completion
+        res.json({
+            success: success,
+            message: success ? 'Playwright test execution completed successfully' : 'Playwright test execution failed',
+            testFile: 'tests/sample.spec.ts',
+            mode: 'headed',
+            browser: 'chromium',
+            workers: 1,
+            resource: resource,
+            testPlan: testPlan,
+            testCaseId: testCaseId,
+            exitCode: exitCode,
+            startTime: startTime,
+            stdout: stdout.slice(-5000), // Limit stdout to last 5000 characters to prevent huge responses
+            stderr: stderr.slice(-2000), // Limit stderr to last 2000 characters
+            fullOutputLength: {
+                stdout: stdout.length,
+                stderr: stderr.length
+            }
+        });
+
+    } catch (error: any) {
+        console.error('❌ API error in Playwright test execution:', error);
+        res.status(500).json({
+            error: 'Failed to run Playwright test',
+            details: error.message,
+            message: 'An error occurred while running the Playwright test'
+        });
+    }
+});
+
 
 // 404 handler for unknown routes (MUST BE LAST)
 app.use('*', (req: Request, res: Response) => {
