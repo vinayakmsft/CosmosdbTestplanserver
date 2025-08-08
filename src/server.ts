@@ -1144,7 +1144,7 @@ app.post('/:resourceId/createIssue/:testCaseId', ensureCosmosInitialized, async 
 
         if (!issueUpdated) {
             // If test case not found, create a new suite entry
-            const newSuite: TestSuite = {
+            const newSuite = {
                 id: 'github_issue_suite', // Add required id field
                 testplanid: 'github_issue_suite', // Add required testplanid field
                 resourceId,
