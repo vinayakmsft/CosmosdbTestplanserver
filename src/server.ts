@@ -5,6 +5,7 @@ import morgan from 'morgan';
 import { AzureDevOpsTestPlansClient } from './AzureDevOpsTestPlansClient';
 import { CosmosService, Connection, TestSuite, TestCase, TestPlan } from './cosmosService';
 import { GitHubService, GitHubIssueData } from './githubService';
+import { AzureOpenAIService, EnhanceTestCaseRequest } from './azureOpenAIService';
 import * as dotenv from 'dotenv';
 
 // Load environment variables
@@ -25,6 +26,9 @@ let adoClient: AzureDevOpsTestPlansClient | null = null;
 
 // Global Cosmos DB service instance
 let cosmosService: CosmosService | null = null;
+
+// Global Azure OpenAI service instance
+let azureOpenAIService: AzureOpenAIService | null = null;
 
 // Initialize Azure DevOps client
 async function initializeADOClient(): Promise<void> {
@@ -50,6 +54,21 @@ async function initializeCosmosService(): Promise<void> {
     }
 }
 
+// Initialize Azure OpenAI service
+async function initializeAzureOpenAIService(): Promise<void> {
+    try {
+        if (process.env.AZURE_OPENAI_ENDPOINT && process.env.AZURE_OPENAI_API_KEY) {
+            azureOpenAIService = new AzureOpenAIService();
+            console.log('Azure OpenAI service initialized successfully');
+        } else {
+            console.warn('Azure OpenAI service not initialized: missing environment variables (AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY)');
+        }
+    } catch (error) {
+        console.warn('Failed to initialize Azure OpenAI service:', error);
+        // Don't exit process for OpenAI service failure - it's optional
+    }
+}
+
 // Middleware to ensure client is initialized
 const ensureClientInitialized = (req: Request, res: Response, next: NextFunction) => {
     if (!adoClient) {
@@ -67,6 +86,17 @@ const ensureCosmosInitialized = (req: Request, res: Response, next: NextFunction
         return res.status(500).json({ 
             error: 'Cosmos DB service not initialized',
             message: 'Server is starting up, please try again in a moment'
+        });
+    }
+    next();
+};
+
+// Middleware to ensure Azure OpenAI service is initialized
+const ensureOpenAIInitialized = (req: Request, res: Response, next: NextFunction) => {
+    if (!azureOpenAIService) {
+        return res.status(500).json({ 
+            error: 'Azure OpenAI service not initialized',
+            message: 'Azure OpenAI service is not configured or failed to initialize. Check environment variables.'
         });
     }
     next();
@@ -106,6 +136,20 @@ app.get('/health', async (req: Request, res: Response) => {
         console.error('GitHub health check failed:', error);
     }
     
+    // Test Azure OpenAI connection if available
+    let openAIHealthy = false;
+    let openAIModel = null;
+    
+    try {
+        if (azureOpenAIService) {
+            const openAITest = await azureOpenAIService.healthCheck();
+            openAIHealthy = openAITest.status === 'healthy';
+            openAIModel = openAITest.model;
+        }
+    } catch (error) {
+        console.error('Azure OpenAI health check failed:', error);
+    }
+    
     res.json({
         status: 'healthy',
         timestamp: new Date().toISOString(),
@@ -113,7 +157,10 @@ app.get('/health', async (req: Request, res: Response) => {
         cosmosDbConnected: cosmosHealthy,
         githubConnected: githubHealthy,
         githubUser: githubUser,
-        githubTokenConfigured: !!process.env.GITHUB_TOKEN
+        githubTokenConfigured: !!process.env.GITHUB_TOKEN,
+        azureOpenAIConnected: openAIHealthy,
+        azureOpenAIModel: openAIModel,
+        azureOpenAIConfigured: !!(process.env.AZURE_OPENAI_ENDPOINT && process.env.AZURE_OPENAI_API_KEY)
     });
 });
 
@@ -132,6 +179,7 @@ app.get('/', (req: Request, res: Response) => {
             'POST /api/testcases': 'Create new test case',
             'GET /api/testcases/:id': 'Get test case details by work item ID',
             'POST /api/testcases/batch': 'Get multiple test case details',
+            'POST /api/enhanceTestCase': 'Enhance test cases using Azure OpenAI',
             'POST /api/testplans/:planId/suites/:suiteId/testcases': 'Add test cases to suite',
             'GET /api/testplans/:planId/suites/:suiteId/testcases': 'Get test cases from suite',
             'GET /api/builds/:buildId/testresults': 'Get test results for build',
@@ -367,6 +415,93 @@ app.post('/api/testcases/batch', ensureClientInitialized, async (req: Request, r
         const testCaseDetails = await adoClient!.getMultipleTestCaseDetails(validIds);
         res.json(testCaseDetails);
     } catch (error) {
+        next(error);
+    }
+});
+
+/**
+ * POST /api/enhanceTestCase
+ * Enhance test cases using Azure OpenAI
+ * Body: { 
+ *   title: string,
+ *   testCaseSteps: string[], 
+ *   prd: string,
+ *   resourceId?: string 
+ * }
+ */
+app.post('/api/enhanceTestCase', ensureOpenAIInitialized, ensureCosmosInitialized, async (req: Request, res: Response, next: NextFunction) => {
+    try {
+        const { title, testCaseSteps, prd, resourceId, userPrompt } = req.body;
+        
+        // Validate required fields
+        if (!title || typeof title !== 'string') {
+            return res.status(400).json({ 
+                error: 'Missing or invalid required field',
+                message: 'title is required and must be a string'
+            });
+        }
+        
+        if (!testCaseSteps || !Array.isArray(testCaseSteps) || testCaseSteps.length === 0) {
+            return res.status(400).json({ 
+                error: 'Missing or invalid required field',
+                message: 'testCaseSteps is required and must be a non-empty array'
+            });
+        }
+        
+        // Validate userPrompt if provided
+        if (userPrompt !== undefined && typeof userPrompt !== 'string') {
+            return res.status(400).json({ 
+                error: 'Invalid field type',
+                message: 'userPrompt must be a string if provided'
+            });
+        }
+        
+        let prdContent = prd;
+        
+        // If resourceId is provided and PRD is not, try to get PRD from connection
+        if (!prdContent && resourceId) {
+            try {
+                const connection = await cosmosService!.getConnection(decodeURIComponent(resourceId));
+                if (connection && connection.prd) {
+                    prdContent = connection.prd;
+                    console.log(`Using PRD from connection for resourceId: ${resourceId}`);
+                } else {
+                    console.warn(`No PRD found in connection for resourceId: ${resourceId}`);
+                }
+            } catch (error) {
+                console.warn(`Failed to retrieve connection for resourceId ${resourceId}:`, error);
+            }
+        }
+        
+        if (!prdContent) {
+            return res.status(400).json({ 
+                error: 'Missing required field',
+                message: 'prd is required (either in request body or associated with resourceId)'
+            });
+        }
+        
+        const promptInfo = userPrompt ? ` with custom instructions` : '';
+        console.log(`Enhancing test case "${title}" with ${testCaseSteps.length} steps${promptInfo} using Azure OpenAI...`);
+        
+        // Prepare request for Azure OpenAI service
+        const enhanceRequest: EnhanceTestCaseRequest = {
+            title,
+            testCaseSteps,
+            prd: prdContent,
+            userPrompt
+        };
+        
+        // Call Azure OpenAI service
+        const result = await azureOpenAIService!.enhanceTestCase(enhanceRequest);
+        
+        console.log(`✅ Successfully enhanced test case, generated ${result.enhancedTestCases.length} enhanced test cases`);
+        
+        // Return plain text response for human readability
+        res.set('Content-Type', 'text/plain');
+        res.send(result.markdownReport);
+        
+    } catch (error: any) {
+        console.error('Error in enhanceTestCase endpoint:', error);
         next(error);
     }
 });
@@ -1335,13 +1470,20 @@ async function startServer() {
         // Initialize Azure DevOps client
         await initializeADOClient();
         
+        // Initialize Azure OpenAI service (optional)
+        await initializeAzureOpenAIService();
+        
         // Start the server
         app.listen(PORT, () => {
             console.log(`🚀 Azure DevOps Test Plans API Server running on port ${PORT}`);
             console.log(`📚 API Documentation: http://localhost:${PORT}`);
             console.log(`🔍 Health Check: http://localhost:${PORT}/health`);
             console.log(`📋 Test Plans: http://localhost:${PORT}/api/testplans`);
+            console.log(`🤖 Test Case Enhancement: http://localhost:${PORT}/api/enhanceTestCase`);
             console.log(`💾 Cosmos DB: Connected and ready`);
+            if (azureOpenAIService) {
+                console.log(`🧠 Azure OpenAI: Ready for test case enhancement`);
+            }
         });
     } catch (error) {
         console.error('Failed to start server:', error);
