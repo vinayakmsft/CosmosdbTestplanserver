@@ -37,7 +37,7 @@ export class AzureDevOpsTestPlansClient {
     static async createWithConnectionInfo(adoUrl: string): Promise<AzureDevOpsTestPlansClient> {
         // Parse the ADO URL to extract organization and project
         // Parse ADO URL to extract organization and project info as fallback
-        // Given ADO URL like https://devdiv.visualstudio.com/OnlineServices/_testPlans/define?planId=2542817&suiteId=2542818
+        // Given ADO URL like https://devdiv.visualstudio.com/OnlineServices/_testPlans/define?planId=2545821&suiteId=2542818
         // Need to extract organization as devdiv and project as OnlineServices
         let organization = 'devdiv';
         let project = 'OnlineServices';
@@ -192,7 +192,7 @@ export class AzureDevOpsTestPlansClient {
 
         try {
             // Get the specific test plan by ID
-            const testPlanId = 2542817;
+            const testPlanId = 2545821;
             console.log(`Fetching test plan with ID: ${testPlanId}`);
             const testPlan = await this.testPlanApi.getTestPlanById(this.project, testPlanId);
 

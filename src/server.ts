@@ -726,7 +726,7 @@ app.get('/:resourceId/ado_plans', ensureClientInitialized, ensureCosmosInitializ
         }
 
         // Parse ADO URL to extract organization and project info as fallback
-        // Given ADO URL like https://devdiv.visualstudio.com/OnlineServices/_testPlans/define?planId=2542817&suiteId=2542818
+        // Given ADO URL like https://devdiv.visualstudio.com/OnlineServices/_testPlans/define?planId=2545821&suiteId=2542818
         // Need to extract organization as devdiv and project as OnlineServices
         let organization = 'devdiv';
         let project = 'OnlineServices';
@@ -765,7 +765,7 @@ app.get('/:resourceId/ado_plans', ensureClientInitialized, ensureCosmosInitializ
         //     });
         // }
 
-        testPlanId =  2542817;
+        testPlanId =  2545821;
 
         console.log(`Fetching test plans for ADO URL: ${connection.ado_url}`);
         console.log(`Organization: ${organization || 'not specified'}, Project: ${project || 'default from env'}, TestPlanId: ${testPlanId || 'all plans'}`);
@@ -947,7 +947,7 @@ app.get('/:resourceId/testPlans', ensureCosmosInitialized, async (req: Request, 
     try {
         let { resourceId } = req.params;
         const forceRefresh = req.query.forceRefresh === 'true';
-        const testPlanId = req.query.testPlanId as string || '2542817';
+        const testPlanId = req.query.testPlanId as string || '2545821';
         // Decode the URL-encoded resourceId
         resourceId = decodeURIComponent(resourceId);
 
@@ -1006,7 +1006,7 @@ app.post('/:resourceId/createIssue', ensureCosmosInitialized, async (req: Reques
         
         // Decode the URL-encoded resourceId
         resourceId = decodeURIComponent(resourceId);
-        const testPlanId = req.query.testPlanId as string || '2542817';
+        const testPlanId = req.query.testPlanId as string || '2545821';
 
         const { testCases, labels, assignees } = req.body;
 
