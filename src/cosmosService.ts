@@ -171,7 +171,14 @@ export class CosmosService {
                 throw new Error('CosmosService not initialized. Call initialize() first.');
             }
 
-            await this.connectionsContainer.item(resourceId, resourceId).delete();
+            // First, find the connection by resourceId to get the actual document ID
+            const connection = await this.getConnection(resourceId);
+            if (!connection) {
+                throw new Error(`Connection not found for resourceId: ${resourceId}`);
+            }
+
+            // Delete using the actual document ID and resourceId as partition key
+            await this.connectionsContainer.item(connection.id!, connection.resourceId).delete();
         } catch (error: any) {
             if (error.code !== 404) {
                 console.error('Error deleting connection from Cosmos DB:', error);
