@@ -1,4 +1,3 @@
-
 import OpenAI from 'openai';
 import { DefaultAzureCredential } from '@azure/identity';
 import * as dotenv from 'dotenv';
