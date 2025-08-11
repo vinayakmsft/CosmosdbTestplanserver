@@ -498,7 +498,7 @@ app.post('/api/enhanceTestCase', ensureOpenAIInitialized, ensureCosmosInitialize
         
         // Return plain text response for human readability
         res.set('Content-Type', 'text/plain');
-        res.send(result.markdownReport);
+        res.send(result.enhancedTestCases);
         
     } catch (error: any) {
         console.error('Error in enhanceTestCase endpoint:', error);

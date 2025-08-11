@@ -14,8 +14,7 @@ export interface EnhanceTestCaseRequest {
 }
 
 export interface EnhanceTestCaseResponse {
-    enhancedTestCases: any[];
-    markdownReport: string;
+    enhancedTestCases: string;
 }
 
 export class AzureOpenAIService {
@@ -79,17 +78,16 @@ Return the result as structured JSON with enhanced test cases.`;
                 throw new Error('Empty content received from Azure OpenAI');
             }
 
-            console.log('Received response from Azure OpenAI, processing...');
+            console.log('Received response from Azure OpenAI, processing...', content);
 
             // Parse the JSON response
-            const enhancedTestCases = this.parseOpenAIResponse(content);
+            const parsedResponse = this.parseStructuredResponse(content);
             
-            // Generate plain text report for human readability
-            const textReport = this.generateTextReport(enhancedTestCases, request);
+            // Convert to Markdown format
+            const markdownReport = this.convertToMarkdown(parsedResponse);
 
             return {
-                enhancedTestCases,
-                markdownReport: textReport  // Keep property name for backward compatibility
+                enhancedTestCases: markdownReport
             };
 
         } catch (error: any) {
@@ -122,7 +120,21 @@ ${userPrompt.trim()}`;
         prompt += `
 
 ## Task
-Please analyze the PRD and the provided test case title and steps, then generate a comprehensive, detailed test plan following the instructions in the system prompt. Return the result as structured JSON that includes enhanced test cases with detailed steps, expected results, and complete coverage scenarios.`;
+Analyze the PRD context and the provided test case above. Then enhance ONLY this specific test case by adding missing details, more specific steps, and expected results.
+
+**CRITICAL INSTRUCTIONS:**
+1. Return ONLY valid JSON in the exact format specified in the system prompt
+2. Enhance ONLY the provided test case - do NOT create additional test cases  
+3. Stay focused on the original test case scope - do NOT expand to other features
+4. Return exactly ONE enhanced test case in JSON format
+
+Return the JSON response with these exact fields:
+- "title": Enhanced version of the original test case title
+- "preconditions": Array of setup requirements  
+- "test_steps": Array of detailed test steps
+- "expected_results": Array of expected outcomes
+
+DO NOT add any text outside the JSON. Return ONLY the JSON object.`;
 
         return prompt.trim();
     }
@@ -146,7 +158,7 @@ Please analyze the PRD and the provided test case title and steps, then generate
                             content: userPrompt
                         }
                     ],
-                    temperature: 0.7,
+                    temperature: 0,
                     max_tokens: 4000,
                     top_p: 0.95,
                     frequency_penalty: 0,
@@ -172,6 +184,95 @@ Please analyze the PRD and the provided test case title and steps, then generate
         }
 
         throw new Error(`Azure OpenAI call failed after ${maxRetries} attempts: ${lastError!.message}`);
+    }
+
+    private parseStructuredResponse(content: string): any {
+        try {
+            // First, try to extract JSON from markdown code blocks if present
+            let jsonString = '';
+            const jsonMatch = content.match(/```json\s*([\s\S]*?)\s*```/);
+            
+            if (jsonMatch) {
+                jsonString = jsonMatch[1];
+            } else {
+                // If no code block, try to find JSON object in the content
+                const objectMatch = content.match(/(\{[\s\S]*\})/);
+                if (objectMatch) {
+                    jsonString = objectMatch[1];
+                } else {
+                    // Assume the entire content is JSON
+                    jsonString = content.trim();
+                }
+            }
+
+            console.log('Attempting to parse structured JSON response...');
+            const parsed = JSON.parse(jsonString);
+            
+            // Validate the expected structure
+            if (!parsed.title || !Array.isArray(parsed.preconditions) || 
+                !Array.isArray(parsed.test_steps) || !Array.isArray(parsed.expected_results)) {
+                throw new Error('JSON response does not match expected structure');
+            }
+            
+            console.log('Successfully parsed structured JSON response');
+            return parsed;
+            
+        } catch (error) {
+            console.error('Failed to parse structured OpenAI response:', error);
+            console.log('Raw response preview:', content.substring(0, 500) + (content.length > 500 ? '...' : ''));
+            
+            // Return a fallback structure
+            return {
+                title: 'Parse Error - Manual Review Required',
+                preconditions: ['Failed to parse AI response - manual review needed'],
+                test_steps: ['Review the raw AI response for parsing issues'],
+                expected_results: ['AI response should be reviewed and corrected manually'],
+                _parseError: true,
+                _rawContent: content.substring(0, 1000)
+            };
+        }
+    }
+
+    private convertToMarkdown(response: any): string {
+        const title = response.title || 'Untitled Test Case';
+        
+        let markdown = `TITLE: ${title}\n\n`;
+        
+        markdown += `PRECONDITIONS:\n`;
+        if (Array.isArray(response.preconditions) && response.preconditions.length > 0) {
+            response.preconditions.forEach((precondition: string) => {
+                markdown += `• ${precondition}\n`;
+            });
+        } else {
+            markdown += `• No specific preconditions\n`;
+        }
+        markdown += `\n`;
+        
+        markdown += `TEST STEPS:\n`;
+        if (Array.isArray(response.test_steps) && response.test_steps.length > 0) {
+            response.test_steps.forEach((step: string, index: number) => {
+                markdown += `${index + 1}. ${step}\n`;
+            });
+        } else {
+            markdown += `1. No test steps provided\n`;
+        }
+        markdown += `\n`;
+        
+        markdown += `EXPECTED RESULTS:\n`;
+        if (Array.isArray(response.expected_results) && response.expected_results.length > 0) {
+            response.expected_results.forEach((result: string) => {
+                markdown += `• ${result}\n`;
+            });
+        } else {
+            markdown += `• No expected results specified\n`;
+        }
+        
+        // Add parse error warning if applicable
+        if (response._parseError) {
+            markdown += `\n⚠️ **PARSE ERROR**: There was an issue parsing the AI response. Please review the output above.\n`;
+        }
+        
+        return markdown.trim();
     }
 
     private parseOpenAIResponse(content: string): any[] {
