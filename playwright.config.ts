@@ -81,8 +81,6 @@ export default defineConfig({
       name: 'chromium',
       use: { 
         ...devices['Desktop Chrome'],
-        // Additional Chrome-specific settings for Microsoft authentication
-        channel: 'chrome',
         launchOptions: {
           args: [
             '--disable-web-security',
