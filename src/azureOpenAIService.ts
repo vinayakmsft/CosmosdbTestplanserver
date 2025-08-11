@@ -82,7 +82,7 @@ Return the result as structured JSON with enhanced test cases.`;
 
             // Parse the JSON response
             const parsedResponse = this.parseStructuredResponse(content);
-
+            
             // Convert to Markdown format
             const markdownReport = this.convertToMarkdown(parsedResponse);
 
@@ -127,11 +127,13 @@ Analyze the PRD context and the provided test case above. Then enhance ONLY this
 2. Enhance ONLY the provided test case - do NOT create additional test cases  
 3. Stay focused on the original test case scope - do NOT expand to other features
 4. Return exactly ONE enhanced test case in JSON format
+
 Return the JSON response with these exact fields:
 - "title": Enhanced version of the original test case title
 - "preconditions": Array of setup requirements  
 - "test_steps": Array of detailed test steps
 - "expected_results": Array of expected outcomes
+
 DO NOT add any text outside the JSON. Return ONLY the JSON object.`;
 
         return prompt.trim();
