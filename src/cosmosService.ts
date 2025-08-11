@@ -35,7 +35,8 @@ export interface TestCase {
 }
 
 export interface TestSuite {
-    id?: string;
+    id: string;
+    testplanid:string;
     resourceId: string;
     name: string;
     testCaseId: string;
@@ -58,6 +59,7 @@ export interface TestPlan {
 }
 
 export class CosmosService {
+    
     private client: CosmosClient;
     private database: Database;
     private connectionsContainer: Container;
@@ -185,15 +187,15 @@ export class CosmosService {
                 throw new Error('CosmosService not initialized. Call initialize() first.');
             }
 
+            // first delete existing suites for the resourceId
+            await this.deleteTestSuites(resourceId);
+            
             const savedSuites: TestSuite[] = [];
 
             for (const suite of suites) {
-                // Create a safe document ID by encoding the resourceId and testCaseId
-                const safeId = `suite_${Buffer.from(`${resourceId}_${suite.testCaseId}`).toString('base64').replace(/[^a-zA-Z0-9]/g, '_')}`;
-                
+                // Use test plan ID as the document ID for test suites
                 const suiteToSave = {
                     ...suite,
-                    id: safeId,
                     resourceId
                 };
 
@@ -208,18 +210,22 @@ export class CosmosService {
         }
     }
 
-    async getTestSuites(resourceId: string): Promise<TestSuite[]> {
+    async getTestSuites(resourceId: string, testPlanId: string): Promise<TestSuite[]> {
         try {
             if (!this.isInitialized) {
                 throw new Error('CosmosService not initialized. Call initialize() first.');
             }
 
             const querySpec = {
-                query: 'SELECT * FROM c WHERE c.resourceId = @resourceId',
+                query: 'SELECT * FROM c WHERE c.resourceId = @resourceId AND c.testplanid = @testPlanId',
                 parameters: [
                     {
                         name: '@resourceId',
                         value: resourceId
+                    },
+                    {
+                        name: '@testPlanId',
+                        value: testPlanId
                     }
                 ]
             };
@@ -303,11 +309,11 @@ export class CosmosService {
             const savedPlans: TestPlan[] = [];
 
             for (const plan of testPlans) {
-                // Create a safe document ID by encoding the resourceId and planId
-                const safeId = `plan_${Buffer.from(`${resourceId}_${plan.id}`).toString('base64').replace(/[^a-zA-Z0-9]/g, '_')}`;
+                // Use test plan ID directly as the document ID
+                const documentId = plan.id.toString();
                 
                 const planToSave: TestPlan = {
-                    id: safeId,
+                    id: documentId,
                     resourceId,
                     planId: plan.id,
                     name: plan.name,
@@ -350,6 +356,30 @@ export class CosmosService {
             return resources;
         } catch (error) {
             console.error('Error getting test plans from Cosmos DB:', error);
+            throw error;
+        }
+    }
+
+    async getTestSuitesByPlanId(testPlanId: number): Promise<TestSuite[]> {
+        try {
+            if (!this.isInitialized) {
+                throw new Error('CosmosService not initialized. Call initialize() first.');
+            }
+
+            const querySpec = {
+                query: 'SELECT * FROM c WHERE c.testPlanid = @testPlanId',
+                parameters: [
+                    {
+                        name: '@testPlanId',
+                        value: testPlanId
+                    }
+                ]
+            };
+
+            const { resources } = await this.testSuitesContainer.items.query<TestSuite>(querySpec).fetchAll();
+            return resources;
+        } catch (error) {
+            console.error('Error getting test suites from Cosmos DB:', error);
             throw error;
         }
     }

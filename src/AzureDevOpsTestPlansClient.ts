@@ -36,13 +36,22 @@ export class AzureDevOpsTestPlansClient {
      */
     static async createWithConnectionInfo(adoUrl: string): Promise<AzureDevOpsTestPlansClient> {
         // Parse the ADO URL to extract organization and project
-        const urlMatch = adoUrl.match(/https:\/\/dev\.azure\.com\/([^\/]+)\/?(.*)?/);
-        if (!urlMatch) {
-            throw new Error('Invalid Azure DevOps URL format. Expected: https://dev.azure.com/organization/project');
+        // Parse ADO URL to extract organization and project info as fallback
+        // Given ADO URL like https://devdiv.visualstudio.com/OnlineServices/_testPlans/define?planId=2545821&suiteId=2542818
+        // Need to extract organization as devdiv and project as OnlineServices
+        let organization = 'devdiv';
+        let project = 'OnlineServices';
+        let organizationParam="";
+        let projectParam="";
+
+        const adoUrlMatch = adoUrl.match(/https:\/\/dev\.azure\.com\/([^\/]+)\/?(.*)?/);
+        if (adoUrlMatch) {
+            organization = adoUrlMatch[1];
+            project = adoUrlMatch[2] || '';
+        } else {
+            console.warn('ADO URL does not match expected format, using defaults');
         }
 
-        const organization = urlMatch[1];
-        const project = urlMatch[2] ? urlMatch[2].replace(/\/$/, '') : process.env.AZURE_DEVOPS_PROJECT || '';
         const orgUrl = `https://dev.azure.com/${organization}`;
 
         // Create and initialize the client
@@ -183,7 +192,7 @@ export class AzureDevOpsTestPlansClient {
 
         try {
             // Get the specific test plan by ID
-            const testPlanId = 2542817;
+            const testPlanId = 2545821;
             console.log(`Fetching test plan with ID: ${testPlanId}`);
             const testPlan = await this.testPlanApi.getTestPlanById(this.project, testPlanId);
 
