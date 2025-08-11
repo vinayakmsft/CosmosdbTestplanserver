@@ -882,7 +882,7 @@ app.get('/:resourceId/ado_plans', ensureClientInitialized, ensureCosmosInitializ
                     });
 
                     suites.push({
-                        name: `${plan.name} - ${suite.name}`,
+                        name: suite.name,
                         testCaseId: `${plan.id}-${suite.id}`,
                         testPlanId: plan.id, // Map test suite with test plan ID
                         testCases: transformedTestCases
